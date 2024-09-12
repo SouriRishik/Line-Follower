@@ -28,16 +28,16 @@
 #include "string.h"
 
 #define address 1
-#define kp 11
-#define kd 0.3
+#define kp 8.8
+#define kd 0.5
 #define ki 0.000004
 #define MAX_LOOP_COUNT 4
 
 double error, P, I, D;
-int setpoint = 50;
+int setpoint = 35;
 double correction = 0, lastInput = 0;
 uint32_t lastTime = 0;
-//double integralMin = -25.0, integralMax = 25.0;
+double integralMin = -25.0, integralMax = 25.0;
 //double base_speed_right = 150;
 //double base_speed_left = 150;
 double base_speed = 200;
@@ -108,11 +108,10 @@ int _write(int file, char *ptr, int len) {
 	return len;
 }
 
-const int weights[8] = {0, 15, 30, 40, 60, 70, 85, 100};
-
+const int weights[8] = {0, 10, 20, 30, 40, 50, 60, 70};
 
 uint8_t line_data() {
-    uint8_t rxByte;
+    uint8_t rxByte = 0;
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, 0);
     HAL_Delay(1);
     HAL_UART_Receive(&huart1, &rxByte, 1, HAL_MAX_DELAY);
@@ -122,47 +121,22 @@ uint8_t line_data() {
 }
 
 int process_byte(uint8_t byte) {
-    int max_weighted_sum = 0;
-    int max_count_active_sensors = 0;
-
-    int current_weighted_sum = 0;
-    int current_count_active_sensors = 0;
-
-    int in_group = 0;
+    int weighted_sum = 0;
+    int count_active_sensors = 0;
 
     for (int i = 0; i < 8; i++) {
         if (byte & (1 << i)) {
-            if (!in_group) {
-                in_group = 1;
-                current_weighted_sum = weights[i];
-                current_count_active_sensors = 1;
-            } else {
-                current_weighted_sum += weights[i];
-                current_count_active_sensors++;
-            }
-        } else {
-            if (in_group) {
-                if (current_count_active_sensors > max_count_active_sensors) {
-                    max_weighted_sum = current_weighted_sum;
-                    max_count_active_sensors = current_count_active_sensors;
-                }
-                in_group = 0;
-            }
+            weighted_sum += weights[i];
+            count_active_sensors++;
         }
     }
 
-    if (in_group && current_count_active_sensors > max_count_active_sensors) {
-        max_weighted_sum = current_weighted_sum;
-        max_count_active_sensors = current_count_active_sensors;
-    }
-
-    if (max_count_active_sensors == 0) {
+    if (count_active_sensors == 0) {
         return 255;
     }
 
-    return max_weighted_sum / max_count_active_sensors;
+    return weighted_sum / count_active_sensors;
 }
-
 
 
 int junction_data() {
@@ -172,6 +146,7 @@ int junction_data() {
 
 void setMotorSpeed(uint8_t motor, int32_t speed) {
 	uint16_t pwm = abs(speed);
+//	printf("in motor speed");
 	if (pwm > 200)
 		pwm = 200;
 
@@ -181,7 +156,6 @@ void setMotorSpeed(uint8_t motor, int32_t speed) {
 			TIM3->CCR1 = 0;          // Set PWM duty cycle for channel 2
 		} else {
 			TIM2->CCR1 = 0;          // Set PWM duty cycle for channel 1
-
 			TIM3->CCR1 = pwm;  // Set PWM duty cycle for channel 2
 		}
 	} else if (motor == 1) { // Motor 2
@@ -199,11 +173,11 @@ void setMotorSpeed(uint8_t motor, int32_t speed) {
 void computePID(double error, int32_t input) {
 
 	double timeChange = (double) (HAL_GetTick() - lastTime);
-
+//	printf("Inside compute pid error = %f\n", error);
 	P = kp * error;
 	I += ki * error * timeChange;
-//	if (I > integralMax) I = integralMax;
-//	if (I < integralMin) I = integralMin;
+	if (I > integralMax) I = integralMax;
+	if (I < integralMin) I = integralMin;
 	D = kd * (input - lastInput) / timeChange;
 
 	correction = P + I + D;
@@ -213,38 +187,37 @@ void computePID(double error, int32_t input) {
 //	base_speed_right = floor(base_speed_right);
 //	base_speed_left = floor(base_speed_left);
 
-	printf("input = %d\n", input);
-	printf("lastinput = %lf\n", lastInput);
-	printf("error = %f\n", error);
-	printf("P = %f\n", P);
-	printf("I = %f\n", I);
-	printf("D = %f\n", D);
-//	base_speed_right -= correction;
-//	base_speed_left += correction;
-	printf("correction = %f\n", correction);
-//	printf("motor0: %f, motor1:%f\n" ,base_speed_left,base_speed_right);
-//	setMotorSpeed(0, base_speed_left);
-//	setMotorSpeed(1, base_speed_right);
-	printf("motor0: %f, motor1:%f\n", base_speed + correction,
-			base_speed - correction);
+//	printf("input = %d\n", input);
+//	printf("lastinput = %lf\n", lastInput);
+//	printf("P = %f\n", P);
+//	printf("I = %f\n", I);
+//	printf("D = %f\n", D);
+////	base_speed_right -= correction;
+////	base_speed_left += correction;
+//	printf("correction = %f\n", correction);
+////	printf("motor0: %f, motor1:%f\n" ,base_speed_left,base_speed_right);
+////	setMotorSpeed(0, base_speed_left);
+////	setMotorSpeed(1, base_speed_right);
+//	printf("motor0: %f, motor1:%f\n", base_speed + correction,
+//			base_speed - correction);
 	setMotorSpeed(0, base_speed + correction);
 	setMotorSpeed(1, base_speed - correction);
 
 }
 uint8_t rxData;
 
-int isInLoop(int current_turn) {
-    if (current_turn == last_turn) {
-        loop_counter++;
-        if (loop_counter >= MAX_LOOP_COUNT) {
-            return 1;
-        }
-    } else {
-        loop_counter = 0;
-    }
-    last_turn = current_turn;
-    return 0;
-}
+//int isInLoop(int current_turn) {
+//    if (current_turn == last_turn) {
+//        loop_counter++;
+//        if (loop_counter >= MAX_LOOP_COUNT) {
+//            return 1;
+//        }
+//    } else {
+//        loop_counter = 0;
+//    }
+//    last_turn = current_turn;
+//    return 0;
+//}
 
 /* USER CODE END 0 */
 
@@ -296,46 +269,36 @@ int main(void) {
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
 	while (1) {
+
 		int input_byte = line_data();
 		int input = process_byte(input_byte);
-		printf("Input: %d\n", input);
-		printf("Turn: %d\n", turn);
-		printf("junction: %d\n", junction);
-		turn = input > 70 && input <= 100 ? 1 : input < 30 ? -1 : turn;
-
+//		printf("Input: %d\n", input);
+//		printf("input byte: %d\n", input_byte);
+//		printf("Turn: %d\n", turn);
+//		printf("junction: %d\n", junction);
+		turn = input > 50 && input <= 70 ? 1 : input < 20 ? -1 : turn;
 //		if (input > 52 && input <= 70) {
 //		        turn = 1;
 //		} else if (input < 20) {
 //		        turn = -1;
 //		}
-//		while (isInLoop(turn)) {
-//		        // Reverse the turn direction to exit the loop
-//		        turn = (turn == 1) ? -1 : 1;
-//
-//		        // Execute the turn based on the detected input values (50 for right, <20 for left)
-//		        while (input > 50 && input <= 70 || input < 20) {
-//		            if (turn == 1) {
-//		                setMotorSpeed(0, 50);
-//		                setMotorSpeed(1, -50);
-//		            } else if (turn == -1) {
-//		                setMotorSpeed(0, -50);
-//		                setMotorSpeed(1, 50);
-//		            }
-//		            input_byte = line_data();
-//		            input = process_byte(input_byte);
-//		        }
-//		        // Reset the loop counter after breaking the loop
-//		        loop_counter = 0;
+//		if (isInLoop(turn)) {
+//		    if (turn == 1) {
+//		        turn = -1;
+//		    } else if (turn == -1) {
+//		        turn = 1;
+//		    }
 //		}
 
 		if (turn) {
 			while (input == 255) {
+//				printf("here");
 				if (turn == 1) {
-					setMotorSpeed(0, 50);
-					setMotorSpeed(1, -50);
+					setMotorSpeed(0, 150);
+					setMotorSpeed(1, -150);
 				} else if(turn == -1) {
-					setMotorSpeed(0, -50);
-					setMotorSpeed(1, 50);
+					setMotorSpeed(0, -150);
+					setMotorSpeed(1, 150);
 				}
 				input_byte = line_data();
 				input = process_byte(input_byte);
@@ -343,10 +306,11 @@ int main(void) {
 //			turn = 0;
 //			continue;
 //			input = line_data();
+			input_byte = line_data();
+			input = process_byte(input_byte);
 		}
-		turn = 0;
-		turn = input > 70 && input <= 100 ? 1 : input < 30 ? -1 : turn;
-
+//		turn = 0;
+		turn = input > 52 && input <= 70 ? 1 : input < 20 ? -1 : turn;
 		if (input == 255) {
 //			setMotorSpeed(0, 0);
 //			setMotorSpeed(1, 0);
@@ -421,7 +385,7 @@ int main(void) {
 //		__HAL_UART_ENABLE_IT(&huart2 , UART_IT_RXNE);
 //
 //	}
-		printf("line: %d\n", line_data());
+//		printf("line: %d\n", line_data());
 
 	}
 	/* USER CODE END 3 */
